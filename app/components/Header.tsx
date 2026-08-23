@@ -90,6 +90,12 @@ export function Header() {
             >
               Buy Quote
             </NavLink>
+            <NavLink
+              href="/sell-quote"
+              isActive={pathname === "/sell-quote"}
+            >
+              Sell Quote
+            </NavLink>
 
             <div className="ml-4">
               <EmbeddedWalletAuth />
@@ -188,6 +194,13 @@ export function Header() {
               onClick={() => setIsMobileMenuOpen(false)}
             >
               Buy Quote
+            </MobileNavLink>
+            <MobileNavLink
+              href="/sell-quote"
+              isActive={pathname === "/sell-quote"}
+              onClick={() => setIsMobileMenuOpen(false)}
+            >
+              Sell Quote
             </MobileNavLink>
 
             <div className="pt-3 border-t border-cds-line">

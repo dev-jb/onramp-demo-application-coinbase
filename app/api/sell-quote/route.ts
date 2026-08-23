@@ -54,7 +54,25 @@ export async function POST(request: NextRequest) {
     }
 
     // Parse request body
-    const body: SellQuoteRequest = await request.json();
+    const body: Record<string, any> = await request.json();
+
+    // ── Request method (HTTP verb) is an input parameter ─────────────────
+    const method = (body.method || 'POST').toUpperCase();
+
+    if (!['POST', 'GET'].includes(method)) {
+      return NextResponse.json(
+        { error: `Unsupported request method: ${method}. Supported: POST, GET` },
+        { status: 400 }
+      );
+    }
+
+    // Two payload shapes are supported:
+    //   1. Simple snake_case quote (matching cdp docs / cdpcurl) e.g.
+    //      { "sell_currency":"USDC","sell_amount":"100","cashout_currency":"USD",
+    //        "payment_method":"ACH_BANK_ACCOUNT","country":"US","subdivision":"NY" }
+    //   2. Legacy camelCase one-click-sell payload (requires sourceAddress,
+    //      redirectUrl and partnerUserId to return an offramp_url)
+    const isSimple = typeof body.sell_currency === 'string';
 
     const {
       sellCurrency,
@@ -69,11 +87,31 @@ export async function POST(request: NextRequest) {
       partnerUserId,
     } = body;
 
+    // Resolve snake_case first, then fall back to camelCase
+    const resolvedSellCurrency = body.sell_currency ?? sellCurrency;
+    const resolvedSellAmount = body.sell_amount ?? sellAmount;
+    const resolvedSellNetwork = body.sell_network ?? sellNetwork;
+    const resolvedCashoutCurrency = body.cashout_currency ?? cashoutCurrency;
+    const resolvedPaymentMethod = body.payment_method ?? paymentMethod;
+
     // Validate required fields
-    if (!sellCurrency || !sellAmount || !cashoutCurrency || !paymentMethod || !country || !sourceAddress || !redirectUrl || !partnerUserId) {
+    const missingFields: string[] = [];
+    if (!resolvedSellCurrency) missingFields.push('sellCurrency');
+    if (!resolvedSellAmount) missingFields.push('sellAmount');
+    if (!resolvedCashoutCurrency) missingFields.push('cashoutCurrency');
+    if (!resolvedPaymentMethod) missingFields.push('paymentMethod');
+    if (!country) missingFields.push('country');
+
+    // Legacy one-click-sell flow additionally requires these
+    if (!isSimple && (!sourceAddress || !redirectUrl || !partnerUserId)) {
+      missingFields.push('sourceAddress', 'redirectUrl', 'partnerUserId');
+    }
+
+    if (missingFields.length) {
       return NextResponse.json(
         {
           error: 'Missing required fields',
+          required: missingFields,
         },
         { status: 400 }
       );
@@ -119,13 +157,13 @@ export async function POST(request: NextRequest) {
     const cdpApiUrl = 'https://api.developer.coinbase.com/onramp/v1/sell/quote';
     const apiPath = '/onramp/v1/sell/quote';
 
-    // Generate JWT for authentication with the correct request path
+    // Generate JWT for authentication with the correct request path + method
     // IMPORTANT: The JWT must be generated with the exact API path it will be used for
     // because the request path is included in the JWT signature for security
     let jwtToken: string;
     try {
-      jwtToken = await generateJWT(keyName, keySecret, apiPath, 'POST');
-      logger.debug('JWT generated successfully for sell quote endpoint');
+      jwtToken = await generateJWT(keyName, keySecret, apiPath, method);
+      logger.debug('JWT generated successfully for sell quote endpoint', { method });
     } catch (error) {
       logger.error('JWT generation failed', { error });
 
@@ -137,44 +175,47 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // Build the outgoing request body to Coinbase (snake_case per cdpcurl/docs).
+    // For the simple quote, only include the supplied fields so optional
+    // one-click-sell URL params are omitted when not provided.
     const requestBody: any = {
-      sellCurrency,
-      sellAmount,
-      cashoutCurrency,
-      paymentMethod,
+      sell_currency: resolvedSellCurrency,
+      sell_amount: resolvedSellAmount,
+      cashout_currency: resolvedCashoutCurrency,
+      payment_method: resolvedPaymentMethod,
       country,
-      sourceAddress,
-      redirectUrl,
-      partnerUserId,
-      clientIp,
+      ...(resolvedSellNetwork ? { sell_network: resolvedSellNetwork } : {}),
+      ...(subdivision ? { subdivision } : {}),
     };
 
-    // Add optional fields
-    if (sellNetwork) {
-      requestBody.sellNetwork = sellNetwork;
-    }
-    if (subdivision) {
-      requestBody.subdivision = subdivision;
+    // Legacy one-click-sell flow: include source address + redirect params
+    if (!isSimple) {
+      requestBody.source_address = sourceAddress;
+      requestBody.redirect_url = redirectUrl;
+      requestBody.partner_user_id = partnerUserId;
+      requestBody.clientIp = clientIp;
     }
 
     logger.debug('Making request to CDP Sell Quote API', {
-      sellCurrency,
-      sellAmount,
-      sellNetwork,
-      cashoutCurrency,
-      paymentMethod,
+      method,
+      sellCurrency: resolvedSellCurrency,
+      sellAmount: resolvedSellAmount,
+      cashoutCurrency: resolvedCashoutCurrency,
+      paymentMethod: resolvedPaymentMethod,
       country,
+      isSimple,
     });
 
-    // Make request to Coinbase API
+    // Make request to Coinbase API using the requested method
+    const isGet = method === 'GET';
     const response = await fetch(cdpApiUrl, {
-      method: 'POST',
+      method,
       headers: {
-        'Content-Type': 'application/json',
+        ...(isGet ? {} : { 'Content-Type': 'application/json' }),
         'Accept': 'application/json',
         'Authorization': `Bearer ${jwtToken}`,
       },
-      body: JSON.stringify(requestBody),
+      body: isGet ? undefined : JSON.stringify(requestBody),
     });
 
     const responseText = await response.text();
