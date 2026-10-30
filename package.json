@@ -31,7 +31,7 @@
     "viem": "^2.17.4",
     "wagmi": "^2.11.0",
     "x402-fetch": "^1.2.0",
-    "zod": "^3.25.76"
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "@types/canvas-confetti": "^1.9.0",
